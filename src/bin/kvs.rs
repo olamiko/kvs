@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
-use kvs::KvStore;
+use kvs::{KvStore, KvsError, Result};
+use std::path::Path;
 
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
@@ -15,12 +16,40 @@ enum Commands {
     Rm { key: String },
 }
 
-pub fn main() {
-    let cli = Cli::parse();
+pub fn main() -> Result<()> {
+    let cli: Cli = Cli::parse();
+    let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
     match &cli.command {
-        Commands::Get { key } => panic!("unimplemented: exit code {}", 1),
-        Commands::Set { key, value } => panic!("unimplemented: exit code {}", 1),
-        Commands::Rm { key } => panic!("unimplemented: exit code {}", 1),
+        Commands::Set { key, value } => {
+            if let Err(err) = store.set(key.to_string(), value.to_string()) {
+                println!("{}", err);
+                return Err(err);
+            }
+            Ok(())
+        }
+        Commands::Get { key } => {
+            let value = store.get(key.to_string());
+            match value {
+                Ok(val) => match val {
+                    Some(val) => println!("{}", val),
+                    None => println!("{}", KvsError::KeyDoesNotExist),
+                },
+                Err(err) => match err {
+                    KvsError::KeyDoesNotExist => {
+                        println!("{}", KvsError::KeyDoesNotExist);
+                    }
+                    _ => return Err(err),
+                },
+            }
+            Ok(())
+        }
+        Commands::Rm { key } => {
+            if let Err(err) = store.remove(key.to_string()) {
+                println!("{}", err);
+                return Err(err);
+            }
+            Ok(())
+        }
     }
 }
