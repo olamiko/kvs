@@ -9,6 +9,7 @@ edition = "2021"
 clap = { version = "4.5.40", features = ["derive"] }
 flexbuffers = "25.2.10"
 serde = { version = "1.0.219", features = ["serde_derive"] }
+walkdir = "2.2.7"
 
 
 [dev-dependencies]

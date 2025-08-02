@@ -12,6 +12,11 @@ use std::num::TryFromIntError;
 use std::path::PathBuf;
 use std::{collections::HashMap, path, result};
 use std::{error, fmt, io};
+use walkdir::DirEntry;
+use walkdir::WalkDir;
+
+/// Compaction Threshold
+const DEFRAGMENTATION_FACTOR: u8 = 3;
 
 /// Result type for the kvs crate
 pub type Result<T> = result::Result<T, KvsError>;
@@ -21,22 +26,18 @@ pub type Result<T> = result::Result<T, KvsError>;
 pub enum KvsError {
     /// IO variant for kvs crate
     Io(std::io::Error),
-
     /// Serialization error variant for kvs crate
     Serializer(flexbuffers::SerializationError),
-
     /// Deserialization error variant for kvs crate
     Deserializer(flexbuffers::DeserializationError),
-
-
     /// Reader error variant for kvs crate
     Reader(flexbuffers::ReaderError),
-
     /// Key does not exist error variant for kvs crate
     KeyDoesNotExist,
-
     /// Int conversion error variant for kvs crate
     TryFromInt(TryFromIntError),
+    /// WalkDir Error
+    DirectoryWalk(walkdir::Error),
 }
 
 impl fmt::Display for KvsError {
@@ -50,6 +51,7 @@ impl fmt::Display for KvsError {
             KvsError::KeyDoesNotExist => {
                 write!(f, "Key not found")
             }
+            KvsError::DirectoryWalk(ref err) => write!(f, "Walkdir error: {}", err),
         }
     }
 }
@@ -86,12 +88,19 @@ impl From<TryFromIntError> for KvsError {
     }
 }
 
+impl From<walkdir::Error> for KvsError {
+    fn from(err: walkdir::Error) -> Self {
+        KvsError::DirectoryWalk(err)
+    }
+}
+
 /// The store for kvs crate
 pub struct KvStore {
     elements: HashMap<String, u64>,
-    writeFileHandle: File,
-    readFileHandle: BufReader<File>,
-    lastWriteOffset: u64,
+    write_file_handle: File,
+    read_file_handle: BufReader<File>,
+    stale_entries: u64, //(stale entries, total entries). The division of total entries / stale entries must not be greater than defragmentation threshold. if it is, call a compaction!
+                        // Add latest log number entry
 }
 
 /// The command set for serialization and storage
@@ -120,6 +129,7 @@ impl KvStore {
     pub fn open(path: &path::Path) -> Result<Self> {
         let mut index: HashMap<String, u64> = HashMap::new();
         let mut filepath: PathBuf = PathBuf::from(path);
+        let mut stale_entries: u64 = 0;
 
         // Open file handle for reading
         if path.is_dir() {
@@ -137,37 +147,33 @@ impl KvStore {
             if buf_reader.fill_buf()?.is_empty() {
                 break;
             }
-            
+
             let data_offset = buf_reader.stream_position()?;
-            // println!("(open) data offset is {:?}", data_offset);
-            
-            let mut buffer = [0u8; 4];
-            buf_reader.read_exact(&mut buffer)?;
-            let size = u32::from_le_bytes(buffer).try_into()?;
-            let mut logline = vec![0u8; size];
-            buf_reader.read_exact(&mut logline)?;
-            let r = flexbuffers::Reader::get_root(logline.as_slice())?;
-            let kvslogline = KvsLogLine::deserialize(r)?;
+            let kvslogline = KvStore::deserialize_from_log(&mut buf_reader)?;
 
             match kvslogline {
-                KvsLogLine::Set { key,.. } => {
+                KvsLogLine::Set { key, .. } => {
+                    if index.contains_key(&key) {
+                        stale_entries += 1;
+                    }
                     index.insert(key, data_offset);
                 }
                 KvsLogLine::Rm { key } => {
                     index.remove(&key);
+                    stale_entries += 2;
                 }
             }
         }
 
         let w = OpenOptions::new().append(true).open(&filepath)?;
-        let last_offset = buf_reader.stream_position()?;
         buf_reader.rewind()?;
+
         // pass the file handle into the KvStore and return
         Ok(KvStore {
             elements: index,
-            writeFileHandle: w,
-            readFileHandle: buf_reader,
-            lastWriteOffset: last_offset, 
+            write_file_handle: w,
+            read_file_handle: buf_reader,
+            stale_entries: stale_entries,
         })
     }
 
@@ -187,23 +193,14 @@ impl KvStore {
         }
 
         // Unwrapping here since we can be sure `data_offset` isn't None
-        let offset = data_offset.unwrap().clone(); 
-        
-        self.readFileHandle.seek(io::SeekFrom::Start(offset))?;
-        let mut buffer = [0u8; 4];
-        self.readFileHandle.read_exact(&mut buffer)?;
+        let offset = data_offset.unwrap().clone();
+        self.read_file_handle.seek(io::SeekFrom::Start(offset))?;
 
-        let size = u32::from_le_bytes(buffer).try_into().unwrap();
-
-        // println!("size in get is {}", size);
-        let mut logline = vec![0u8; size];
-        self.readFileHandle.read_exact(&mut logline)?;
-        let r = flexbuffers::Reader::get_root(logline.as_slice())?;
-        let kvslogline = KvsLogLine::deserialize(r)?;
+        let kvslogline = KvStore::deserialize_from_log(&mut self.read_file_handle)?;
         if let KvsLogLine::Set { key, value } = kvslogline {
             return Ok(Some(value));
         }
-        return Ok(None);
+        Ok(None)
     }
 
     /// ```
@@ -220,21 +217,14 @@ impl KvStore {
             key: key.clone(),
             value: value.clone(),
         };
-        let mut s = flexbuffers::FlexbufferSerializer::new();
-        logline.serialize(&mut s)?;
-        
-        let data_offset = self.lastWriteOffset;
-        self.writeFileHandle.seek(io::SeekFrom::Start(data_offset))?;
-        // println!("(set) data offset is {:?}", data_offset);
-        
-        // serialize to the log
-        let size: u32 = s.view().len().try_into()?;
-        self.writeFileHandle.write_all(&(size.to_le_bytes()))?;
-        self.writeFileHandle.write_all(s.take_buffer().as_slice())?;
+
+        let data_offset = self.serialize_to_log(logline)?;
 
         // place the element in the index
+        if self.elements.contains_key(&key) {
+            self.stale_entries += 1;
+        }
         self.elements.insert(key, data_offset);
-        self.lastWriteOffset = self.writeFileHandle.stream_position()?;
         Ok(())
     }
 
@@ -255,18 +245,38 @@ impl KvStore {
         }
 
         let logline = KvsLogLine::Rm { key: key.clone() };
-        let mut s = flexbuffers::FlexbufferSerializer::new();
 
+        let _ = self.serialize_to_log(logline);
+
+        // remove the element from the index
+        self.elements.remove(&key);
+        self.stale_entries += 2;
+        Ok(())
+    }
+
+    fn serialize_to_log(&mut self, logline: KvsLogLine) -> Result<u64> {
+        self.write_file_handle.seek(io::SeekFrom::End(0))?;
+        let data_offset = self.write_file_handle.stream_position()?;
+
+        let mut s = flexbuffers::FlexbufferSerializer::new();
         logline.serialize(&mut s)?;
 
         // serialize to the log
         let size: u32 = s.view().len().try_into().unwrap();
-        self.writeFileHandle.write_all(&(size.to_le_bytes()))?;
-        self.writeFileHandle.write_all(s.take_buffer().as_slice())?;
+        self.write_file_handle.write_all(&(size.to_le_bytes()))?;
+        self.write_file_handle
+            .write_all(s.take_buffer().as_slice())?;
+        Ok(data_offset)
+    }
 
-        // remove the element from the index
-        self.elements.remove(&key);
-        self.lastWriteOffset = self.writeFileHandle.stream_position()?;
-        Ok(())
+    fn deserialize_from_log(buf_reader: &mut BufReader<File>) -> Result<KvsLogLine> {
+        let mut buffer = [0u8; 4];
+        buf_reader.read_exact(&mut buffer)?;
+        let size = u32::from_le_bytes(buffer).try_into()?;
+        let mut logline = vec![0u8; size];
+        buf_reader.read_exact(&mut logline)?;
+        let r = flexbuffers::Reader::get_root(logline.as_slice())?;
+        let kvslogline = KvsLogLine::deserialize(r)?;
+        Ok(kvslogline)
     }
 }
