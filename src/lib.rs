@@ -2,24 +2,25 @@
 
 //! Implemtation for the kvs crate
 
+use clap::error::ErrorKind;
 use flexbuffers::SerializationError;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::num::TryFromIntError;
+use std::path::Path;
 use std::path::PathBuf;
 use std::{collections::HashMap, path, result};
 use std::{error, fmt, io};
-use walkdir::DirEntry;
-use walkdir::WalkDir;
-
-/// Compaction Threshold
-const DEFRAGMENTATION_FACTOR: u8 = 3;
 
 /// Result type for the kvs crate
 pub type Result<T> = result::Result<T, KvsError>;
+
+/// DEFRAGMENTATION ALLOWED
+const DEFRAGMENATION_SIZE: u32 = 1024;
 
 /// Error enum for kvs crate
 #[derive(Debug)]
@@ -99,8 +100,8 @@ pub struct KvStore {
     elements: HashMap<String, u64>,
     write_file_handle: File,
     read_file_handle: BufReader<File>,
-    stale_entries: u64, //(stale entries, total entries). The division of total entries / stale entries must not be greater than defragmentation threshold. if it is, call a compaction!
-                        // Add latest log number entry
+    stale_entries: u64,
+    directory_path: path::PathBuf,
 }
 
 /// The command set for serialization and storage
@@ -133,8 +134,11 @@ impl KvStore {
 
         // Open file handle for reading
         if path.is_dir() {
-            filepath.push("kvs.log");
+            filepath.push("kvs_log/kvs.log");
         }
+
+        // Create non-existent directories
+        fs::create_dir_all(filepath.parent().unwrap())?;
 
         let f = OpenOptions::new()
             .read(true)
@@ -173,7 +177,8 @@ impl KvStore {
             elements: index,
             write_file_handle: w,
             read_file_handle: buf_reader,
-            stale_entries: stale_entries,
+            stale_entries,
+            directory_path: filepath,
         })
     }
 
@@ -188,7 +193,7 @@ impl KvStore {
     /// ```
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
         let data_offset = self.elements.get(&key);
-        if let None = data_offset {
+        if data_offset.is_none() {
             return Ok(None);
         }
 
@@ -197,7 +202,7 @@ impl KvStore {
         self.read_file_handle.seek(io::SeekFrom::Start(offset))?;
 
         let kvslogline = KvStore::deserialize_from_log(&mut self.read_file_handle)?;
-        if let KvsLogLine::Set { key, value } = kvslogline {
+        if let KvsLogLine::Set { key: _, value } = kvslogline {
             return Ok(Some(value));
         }
         Ok(None)
@@ -218,13 +223,19 @@ impl KvStore {
             value: value.clone(),
         };
 
-        let data_offset = self.serialize_to_log(logline)?;
+        let data_offset = KvStore::serialize_to_log(&mut self.write_file_handle, logline)?;
 
         // place the element in the index
         if self.elements.contains_key(&key) {
             self.stale_entries += 1;
         }
         self.elements.insert(key, data_offset);
+
+        // check for defragmentation
+        if self.stale_entries > DEFRAGMENATION_SIZE.into() {
+            self.compaction()?;
+        }
+
         Ok(())
     }
 
@@ -246,26 +257,30 @@ impl KvStore {
 
         let logline = KvsLogLine::Rm { key: key.clone() };
 
-        let _ = self.serialize_to_log(logline);
+        let _ = KvStore::serialize_to_log(&mut self.write_file_handle, logline);
 
         // remove the element from the index
         self.elements.remove(&key);
         self.stale_entries += 2;
+
+        // check for defragmentation
+        if self.stale_entries > DEFRAGMENATION_SIZE.into() {
+            self.compaction()?;
+        }
         Ok(())
     }
 
-    fn serialize_to_log(&mut self, logline: KvsLogLine) -> Result<u64> {
-        self.write_file_handle.seek(io::SeekFrom::End(0))?;
-        let data_offset = self.write_file_handle.stream_position()?;
+    fn serialize_to_log(write_handle: &mut File, logline: KvsLogLine) -> Result<u64> {
+        write_handle.seek(io::SeekFrom::End(0))?;
+        let data_offset = write_handle.stream_position()?;
 
         let mut s = flexbuffers::FlexbufferSerializer::new();
         logline.serialize(&mut s)?;
 
         // serialize to the log
         let size: u32 = s.view().len().try_into().unwrap();
-        self.write_file_handle.write_all(&(size.to_le_bytes()))?;
-        self.write_file_handle
-            .write_all(s.take_buffer().as_slice())?;
+        write_handle.write_all(&(size.to_le_bytes()))?;
+        write_handle.write_all(s.take_buffer().as_slice())?;
         Ok(data_offset)
     }
 
@@ -278,5 +293,48 @@ impl KvStore {
         let r = flexbuffers::Reader::get_root(logline.as_slice())?;
         let kvslogline = KvsLogLine::deserialize(r)?;
         Ok(kvslogline)
+    }
+
+    fn compaction(&mut self) -> Result<()> {
+        // create temporary file
+        // can we get the directory from current file handle? Yes, done
+        let dir_path = self.directory_path.parent().unwrap();
+        let directory = File::open(dir_path)?;
+
+        let temp_path = self.directory_path.clone().with_file_name("temp_log.log");
+        let mut w = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&temp_path)?;
+
+        // create struct fields that need to be changed
+        let r = OpenOptions::new().read(true).open(&temp_path)?;
+        let buf_reader = BufReader::new(r);
+        let mut elements: HashMap<String, u64> = HashMap::new();
+
+        // write all current index to temp file
+        for (key, &old_offset) in &self.elements {
+            // deserialize to get the value from the old file
+            self.read_file_handle
+                .seek(io::SeekFrom::Start(old_offset))?;
+            let kvslogline = KvStore::deserialize_from_log(&mut self.read_file_handle)?;
+
+            // serialize to the new file
+            let new_offset = KvStore::serialize_to_log(&mut w, kvslogline)?;
+            elements.insert(key.to_string(), new_offset);
+        }
+
+        // mv temp file to the operating file
+        w.sync_all()?; //sync file
+        fs::rename(temp_path, &self.directory_path)?; // rename the file
+        directory.sync_all()?; // sync the directory
+
+        // set the new parameters into self
+        self.elements = elements;
+        self.write_file_handle = w;
+        self.read_file_handle = buf_reader;
+        self.stale_entries = 0;
+
+        Ok(())
     }
 }
