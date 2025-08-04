@@ -2,7 +2,6 @@
 
 //! Implemtation for the kvs crate
 
-use clap::error::ErrorKind;
 use flexbuffers::SerializationError;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -198,7 +197,7 @@ impl KvStore {
         }
 
         // Unwrapping here since we can be sure `data_offset` isn't None
-        let offset = data_offset.unwrap().clone();
+        let offset = *data_offset.unwrap();
         self.read_file_handle.seek(io::SeekFrom::Start(offset))?;
 
         let kvslogline = KvStore::deserialize_from_log(&mut self.read_file_handle)?;
