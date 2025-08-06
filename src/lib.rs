@@ -36,8 +36,6 @@ pub enum KvsError {
     KeyDoesNotExist,
     /// Int conversion error variant for kvs crate
     TryFromInt(TryFromIntError),
-    /// WalkDir Error
-    DirectoryWalk(walkdir::Error),
 }
 
 impl fmt::Display for KvsError {
@@ -50,8 +48,7 @@ impl fmt::Display for KvsError {
             KvsError::TryFromInt(ref err) => write!(f, "Deserialization error: {}", err),
             KvsError::KeyDoesNotExist => {
                 write!(f, "Key not found")
-            }
-            KvsError::DirectoryWalk(ref err) => write!(f, "Walkdir error: {}", err),
+            },
         }
     }
 }
@@ -85,12 +82,6 @@ impl From<flexbuffers::ReaderError> for KvsError {
 impl From<TryFromIntError> for KvsError {
     fn from(err: TryFromIntError) -> Self {
         KvsError::TryFromInt(err)
-    }
-}
-
-impl From<walkdir::Error> for KvsError {
-    fn from(err: walkdir::Error) -> Self {
-        KvsError::DirectoryWalk(err)
     }
 }
 
