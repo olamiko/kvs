@@ -115,16 +115,9 @@ impl KvStore {
     /// # use kvs::KvStore;
     /// #
     /// # fn main() {
-    /// let mut store = KvStore::new();
+    /// let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
     /// # }
     /// ```
-    // pub fn new() -> Self {
-    //     let f = File::open(path)
-    //     KvStore {
-    //         elements: HashMap::new(),
-    //         fileHandle: None,
-    //     }
-    // }
 
     pub fn open(path: &path::Path) -> Result<Self> {
         let mut index: HashMap<String, u64> = HashMap::new();
