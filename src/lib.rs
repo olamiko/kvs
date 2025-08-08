@@ -9,6 +9,7 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::BufReader;
+use std::io::BufWriter;
 use std::num::TryFromIntError;
 use std::path::Path;
 use std::path::PathBuf;
@@ -88,7 +89,7 @@ impl From<TryFromIntError> for KvsError {
 /// The store for kvs crate
 pub struct KvStore {
     elements: HashMap<String, u64>,
-    write_file_handle: File,
+    write_file_handle: BufWriter<File>,
     read_file_handle: BufReader<File>,
     stale_entries: u64,
     directory_path: path::PathBuf,
@@ -153,12 +154,13 @@ impl KvStore {
         }
 
         let w = OpenOptions::new().append(true).open(&filepath)?;
+        let mut buf_writer = BufWriter::new(w);
         buf_reader.rewind()?;
 
         // pass the file handle into the KvStore and return
         Ok(KvStore {
             elements: index,
-            write_file_handle: w,
+            write_file_handle: buf_writer,
             read_file_handle: buf_reader,
             stale_entries,
             directory_path: filepath,
@@ -253,7 +255,7 @@ impl KvStore {
         Ok(())
     }
 
-    fn serialize_to_log(write_handle: &mut File, logline: KvsLogLine) -> Result<u64> {
+    fn serialize_to_log(write_handle: &mut BufWriter<File>, logline: KvsLogLine) -> Result<u64> {
         write_handle.seek(io::SeekFrom::End(0))?;
         let data_offset = write_handle.stream_position()?;
 
@@ -264,6 +266,7 @@ impl KvStore {
         let size: u32 = s.view().len().try_into().unwrap();
         write_handle.write_all(&(size.to_le_bytes()))?;
         write_handle.write_all(s.take_buffer().as_slice())?;
+        write_handle.flush()?;
         Ok(data_offset)
     }
 
@@ -285,10 +288,12 @@ impl KvStore {
         let directory = File::open(dir_path)?;
 
         let temp_path = self.directory_path.clone().with_file_name("temp_log.log");
-        let mut w = OpenOptions::new()
+        let w = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&temp_path)?;
+
+        let mut buf_writer = BufWriter::new(w);
 
         // create struct fields that need to be changed
         let r = OpenOptions::new().read(true).open(&temp_path)?;
@@ -303,18 +308,19 @@ impl KvStore {
             let kvslogline = KvStore::deserialize_from_log(&mut self.read_file_handle)?;
 
             // serialize to the new file
-            let new_offset = KvStore::serialize_to_log(&mut w, kvslogline)?;
+            let new_offset = KvStore::serialize_to_log(&mut buf_writer, kvslogline)?;
             elements.insert(key.to_string(), new_offset);
         }
 
         // mv temp file to the operating file
-        w.sync_all()?; //sync file
+        // w.sync_all()?; //sync file
+        buf_writer.flush()?;
         fs::rename(temp_path, &self.directory_path)?; // rename the file
         directory.sync_all()?; // sync the directory
 
         // set the new parameters into self
         self.elements = elements;
-        self.write_file_handle = w;
+        self.write_file_handle = buf_writer;
         self.read_file_handle = buf_reader;
         self.stale_entries = 0;
 
