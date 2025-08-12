@@ -109,6 +109,25 @@ impl<W: Write + Seek> BufWriterWithPos<W> {
     }
 }
 
+impl<W: Write + Seek> Write for BufWriterWithPos<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let len = self.writer.write(buf)?;
+        self.pos += len as u64;
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.pos = self.writer.seek(pos)?;
+        Ok(self.pos)
+    }
+}
+
 impl KvStore {
     /// Opens a `KvStore` with the given path
     ///
@@ -144,7 +163,7 @@ impl KvStore {
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
         let writer = new_log_file(&path, current_gen, &mut readers)?;
 
-        Ok(KvStore{
+        Ok(KvStore {
             path,
             readers,
             writer,
@@ -180,6 +199,14 @@ impl KvStore {
         Ok(None)
     }
 
+    /// Sets the value of a string key to a string
+    ///
+    /// If the key already exists, the previous value will be overwritten.
+    ///
+    /// # Errors
+    ///
+    /// It propagates I/O or serialization errors during writing the log
+    ///
     /// ```
     /// # use kvs::KvStore;
     /// #
@@ -195,19 +222,21 @@ impl KvStore {
             value: value.clone(),
         };
 
-        let data_offset = KvStore::serialize_to_log(&mut self.write_file_handle, logline)?;
+        let start_pos = self.writer.pos;
+        serialize_to_log(&mut self.writer, logline)?;
 
         // place the element in the index
-        if self.elements.contains_key(&key) {
-            self.stale_entries += 1;
+        if let Some(old_cmd) = self
+            .index
+            .insert(key, (self.current_gen, start_pos..self.writer.pos).into())
+        {
+            self.uncompacted += old_cmd.len;
         }
-        self.elements.insert(key, data_offset);
 
         // check for defragmentation
-        if self.stale_entries > DEFRAGMENATION_SIZE.into() {
+        if self.uncompacted > COMPACTION_THRESHOLD {
             self.compaction()?;
         }
-
         Ok(())
     }
 
@@ -306,19 +335,15 @@ fn new_log_file(
     Ok(writer)
 }
 
-fn serialize_to_log(write_handle: &mut BufWriter<File>, logline: KvsLogLine) -> Result<u64> {
-    write_handle.seek(io::SeekFrom::End(0))?;
-    let data_offset = write_handle.stream_position()?;
-
+fn serialize_to_log(write_handle: &mut BufWriterWithPos<File>, logline: KvsLogLine) -> Result<()> {
     let mut s = flexbuffers::FlexbufferSerializer::new();
     logline.serialize(&mut s)?;
-
     // serialize to the log
     let size: u32 = s.view().len().try_into().unwrap();
-    write_handle.write_all(&(size.to_le_bytes()))?;
-    write_handle.write_all(s.take_buffer().as_slice())?;
+    write_handle.write(&(size.to_le_bytes()))?;
+    write_handle.write(s.take_buffer().as_slice())?;
     write_handle.flush()?;
-    Ok(data_offset)
+    Ok(())
 }
 
 fn deserialize_from_log(reader: &mut BufReaderWithPos<File>) -> Result<KvsLogLine> {
