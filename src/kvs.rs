@@ -252,21 +252,14 @@ impl KvStore {
     /// ```
     pub fn remove(&mut self, key: String) -> Result<()> {
         // Assert the key is in the index
-        if !self.elements.contains_key(&key) {
+        if !self.index.contains_key(&key) {
             return Err(KvsError::KeyDoesNotExist);
         }
-
         let logline = KvsLogLine::Rm { key: key.clone() };
-
-        let _ = KvStore::serialize_to_log(&mut self.write_file_handle, logline);
-
+        serialize_to_log(&mut self.writer, logline);
         // remove the element from the index
-        self.elements.remove(&key);
-        self.stale_entries += 2;
-
-        // check for defragmentation
-        if self.stale_entries > DEFRAGMENATION_SIZE.into() {
-            self.compaction()?;
+        if let Some(old_cmd) = self.index.remove(&key) {
+            self.uncompacted += old_cmd.len;
         }
         Ok(())
     }
