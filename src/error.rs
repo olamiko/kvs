@@ -1,4 +1,3 @@
-use std::num::TryFromIntError;
 use std::{error, fmt, io};
 
 /// Error enum for kvs crate
@@ -14,8 +13,6 @@ pub enum KvsError {
     Reader(flexbuffers::ReaderError),
     /// Key does not exist error variant for kvs crate
     KeyDoesNotExist,
-    /// Int conversion error variant for kvs crate
-    TryFromInt(TryFromIntError),
     /// Unknown Command Type
     UnexpectedCommandType,
 }
@@ -27,7 +24,6 @@ impl fmt::Display for KvsError {
             KvsError::Serializer(ref err) => write!(f, "Serialization error: {}", err),
             KvsError::Reader(ref err) => write!(f, "Reader error: {}", err),
             KvsError::Deserializer(ref err) => write!(f, "Deserialization error: {}", err),
-            KvsError::TryFromInt(ref err) => write!(f, "Deserialization error: {}", err),
             KvsError::KeyDoesNotExist => {
                 write!(f, "Key not found")
             }
@@ -64,8 +60,3 @@ impl From<flexbuffers::ReaderError> for KvsError {
     }
 }
 
-impl From<TryFromIntError> for KvsError {
-    fn from(err: TryFromIntError) -> Self {
-        KvsError::TryFromInt(err)
-    }
-}

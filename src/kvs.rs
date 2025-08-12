@@ -198,7 +198,7 @@ impl KvStore {
                 .get_mut(&cmd_pos.gen)
                 .expect("Cannot find log reader");
             reader.seek(SeekFrom::Start(cmd_pos.pos));
-            if let KvsLogLine::Set { key, value } = deserialize_from_log(reader)? {
+            if let KvsLogLine::Set { key: _, value } = deserialize_from_log(reader)? {
                 Ok(Some(value))
             } else {
                 Err(KvsError::UnexpectedCommandType)
