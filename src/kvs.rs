@@ -1,31 +1,35 @@
-
 use crate::error::KvsError;
 
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::fs::File;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsStr;
 use std::fs::OpenOptions;
-use std::io::prelude::*;
+use std::fs::{self, File};
 use std::io::BufReader;
 use std::io::BufWriter;
-use std::path::Path;
-use std::path::PathBuf;
-use std::{collections::HashMap, path, result};
-use std::{error, fmt, io};
+use std::io::{prelude::*, SeekFrom};
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::{io, result};
 
 /// Result type for the kvs crate
 pub type Result<T> = result::Result<T, KvsError>;
 
-/// DEFRAGMENTATION ALLOWED
-const DEFRAGMENATION_SIZE: u32 = 1024;
+const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
 /// The store for kvs crate
 pub struct KvStore {
-    elements: HashMap<String, u64>,
-    write_file_handle: BufWriter<File>,
-    read_file_handle: BufReader<File>,
-    stale_entries: u64,
-    directory_path: path::PathBuf,
+    // directory for the log and other data
+    path: PathBuf,
+    // map generation number to the file reader
+    readers: HashMap<u64, BufReaderWithPos<File>>,
+    // writer of the current log
+    writer: BufWriterWithPos<File>,
+    current_gen: u64,
+    index: BTreeMap<String, CommandPos>,
+    // the number of bytes representing "stale" commands that could be
+    // deleted during a compaction
+    uncompacted: u64,
 }
 
 /// The command set for serialization and storage
@@ -35,7 +39,85 @@ enum KvsLogLine {
     Rm { key: String },
 }
 
+/// Represents the position and length of a serialized command in the log
+struct CommandPos {
+    gen: u64,
+    pos: u64,
+    len: u64,
+}
+
+impl From<(u64, Range<u64>)> for CommandPos {
+    fn from((gen, range): (u64, Range<u64>)) -> Self {
+        CommandPos {
+            gen,
+            pos: range.start,
+            len: range.end - range.start,
+        }
+    }
+}
+
+struct BufReaderWithPos<R: Read + Seek> {
+    reader: BufReader<R>,
+    pos: u64,
+}
+
+impl<R: Read + Seek> BufReaderWithPos<R> {
+    fn new(mut inner: R) -> Result<Self> {
+        let pos = inner.seek(io::SeekFrom::Current(0))?;
+        Ok(BufReaderWithPos {
+            reader: BufReader::new(inner),
+            pos,
+        })
+    }
+    fn is_empty(&mut self) -> Result<bool> {
+        Ok(self.reader.fill_buf()?.is_empty())
+    }
+}
+
+impl<R: Read + Seek> Read for BufReaderWithPos<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = self.reader.read(buf)?;
+        self.pos += len as u64;
+        Ok(len)
+    }
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        self.reader.read_exact(buf);
+        self.pos += buf.len() as u64;
+        Ok(())
+    }
+}
+
+impl<R: Read + Seek> Seek for BufReaderWithPos<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.pos = self.reader.seek(pos)?;
+        Ok(self.pos)
+    }
+}
+
+struct BufWriterWithPos<W: Write + Seek> {
+    writer: BufWriter<W>,
+    pos: u64,
+}
+
+impl<W: Write + Seek> BufWriterWithPos<W> {
+    fn new(mut inner: W) -> Result<Self> {
+        let pos = inner.seek(SeekFrom::Current(0))?;
+        Ok(BufWriterWithPos {
+            writer: BufWriter::new(inner),
+            pos,
+        })
+    }
+}
+
 impl KvStore {
+    /// Opens a `KvStore` with the given path
+    ///
+    /// This will create a new directory if the given one does not exist
+    ///
+    /// # Errors
+    ///
+    /// It propagates I/O or deserialization errors during log replay
+    ///
     /// ```
     /// # use kvs::KvStore;
     /// #
@@ -43,60 +125,32 @@ impl KvStore {
     /// let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
     /// # }
     /// ```
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        fs::create_dir_all(&path)?;
 
-    pub fn open(path: &path::Path) -> Result<Self> {
-        let mut index: HashMap<String, u64> = HashMap::new();
-        let mut filepath: PathBuf = PathBuf::from(path);
-        let mut stale_entries: u64 = 0;
+        let mut index = BTreeMap::new();
+        let mut readers = HashMap::new();
 
-        // Open file handle for reading
-        if path.is_dir() {
-            filepath.push("kvs_log/kvs.log");
+        let gen_list = sorted_gen_list(&path)?;
+        let mut uncompacted = 0;
+
+        for &gen in &gen_list {
+            let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?)?;
+            uncompacted += load(gen, &mut reader, &mut index)?;
+            readers.insert(gen, reader);
         }
 
-        // Create non-existent directories
-        fs::create_dir_all(filepath.parent().unwrap())?;
+        let current_gen = gen_list.last().unwrap_or(&0) + 1;
+        let writer = new_log_file(&path, current_gen, &mut readers)?;
 
-        let f = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&filepath)?;
-        let mut buf_reader = BufReader::new(f);
-
-        loop {
-            if buf_reader.fill_buf()?.is_empty() {
-                break;
-            }
-
-            let data_offset = buf_reader.stream_position()?;
-            let kvslogline = KvStore::deserialize_from_log(&mut buf_reader)?;
-
-            match kvslogline {
-                KvsLogLine::Set { key, .. } => {
-                    if index.contains_key(&key) {
-                        stale_entries += 1;
-                    }
-                    index.insert(key, data_offset);
-                }
-                KvsLogLine::Rm { key } => {
-                    index.remove(&key);
-                    stale_entries += 2;
-                }
-            }
-        }
-
-        let w = OpenOptions::new().append(true).open(&filepath)?;
-        let mut buf_writer = BufWriter::new(w);
-        buf_reader.rewind()?;
-
-        // pass the file handle into the KvStore and return
-        Ok(KvStore {
-            elements: index,
-            write_file_handle: buf_writer,
-            read_file_handle: buf_reader,
-            stale_entries,
-            directory_path: filepath,
+        Ok(KvStore{
+            path,
+            readers,
+            writer,
+            current_gen,
+            index,
+            uncompacted,
         })
     }
 
@@ -188,32 +242,6 @@ impl KvStore {
         Ok(())
     }
 
-    fn serialize_to_log(write_handle: &mut BufWriter<File>, logline: KvsLogLine) -> Result<u64> {
-        write_handle.seek(io::SeekFrom::End(0))?;
-        let data_offset = write_handle.stream_position()?;
-
-        let mut s = flexbuffers::FlexbufferSerializer::new();
-        logline.serialize(&mut s)?;
-
-        // serialize to the log
-        let size: u32 = s.view().len().try_into().unwrap();
-        write_handle.write_all(&(size.to_le_bytes()))?;
-        write_handle.write_all(s.take_buffer().as_slice())?;
-        write_handle.flush()?;
-        Ok(data_offset)
-    }
-
-    fn deserialize_from_log(buf_reader: &mut BufReader<File>) -> Result<KvsLogLine> {
-        let mut buffer = [0u8; 4];
-        buf_reader.read_exact(&mut buffer)?;
-        let size = u32::from_le_bytes(buffer).try_into()?;
-        let mut logline = vec![0u8; size];
-        buf_reader.read_exact(&mut logline)?;
-        let r = flexbuffers::Reader::get_root(logline.as_slice())?;
-        let kvslogline = KvsLogLine::deserialize(r)?;
-        Ok(kvslogline)
-    }
-
     fn compaction(&mut self) -> Result<()> {
         // create temporary file
         // can we get the directory from current file handle? Yes, done
@@ -259,4 +287,96 @@ impl KvStore {
 
         Ok(())
     }
+}
+
+fn new_log_file(
+    path: &Path,
+    gen: u64,
+    readers: &mut HashMap<u64, BufReaderWithPos<File>>,
+) -> Result<BufWriterWithPos<File>> {
+    let path = log_path(path, gen);
+    let writer = BufWriterWithPos::new(
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open(&path)?,
+    )?;
+    readers.insert(gen, BufReaderWithPos::new(File::open(&path)?)?);
+    Ok(writer)
+}
+
+fn serialize_to_log(write_handle: &mut BufWriter<File>, logline: KvsLogLine) -> Result<u64> {
+    write_handle.seek(io::SeekFrom::End(0))?;
+    let data_offset = write_handle.stream_position()?;
+
+    let mut s = flexbuffers::FlexbufferSerializer::new();
+    logline.serialize(&mut s)?;
+
+    // serialize to the log
+    let size: u32 = s.view().len().try_into().unwrap();
+    write_handle.write_all(&(size.to_le_bytes()))?;
+    write_handle.write_all(s.take_buffer().as_slice())?;
+    write_handle.flush()?;
+    Ok(data_offset)
+}
+
+fn deserialize_from_log(reader: &mut BufReaderWithPos<File>) -> Result<KvsLogLine> {
+    let mut buffer = [0u8; 4];
+    reader.read_exact(&mut buffer)?;
+    let size = u32::from_le_bytes(buffer).try_into()?;
+
+    let mut logline = vec![0u8; size];
+    reader.read_exact(&mut logline)?;
+    let r = flexbuffers::Reader::get_root(logline.as_slice())?;
+    let kvslogline = KvsLogLine::deserialize(r)?;
+    Ok(kvslogline)
+}
+
+fn load(
+    gen: u64,
+    reader: &mut BufReaderWithPos<File>,
+    index: &mut BTreeMap<String, CommandPos>,
+) -> Result<u64> {
+    let mut pos = reader.seek(SeekFrom::Start(0))?;
+    let mut uncompacted = 0;
+    while !reader.is_empty()? {
+        let kvslogline = deserialize_from_log(reader)?;
+        let new_pos = reader.pos;
+        match kvslogline {
+            KvsLogLine::Set { key, .. } => {
+                if let Some(old_cmd) = index.insert(key, (gen, pos..new_pos).into()) {
+                    uncompacted += old_cmd.len;
+                }
+            }
+            KvsLogLine::Rm { key } => {
+                if let Some(old_cmd) = index.remove(&key) {
+                    uncompacted += old_cmd.len;
+                }
+                uncompacted += new_pos - pos;
+            }
+        }
+        pos = new_pos;
+    }
+    Ok(uncompacted)
+}
+
+fn log_path(path: &Path, gen: u64) -> PathBuf {
+    path.join(format!("{}.log", gen))
+}
+
+fn sorted_gen_list(path: &Path) -> Result<Vec<u64>> {
+    let mut gen_list: Vec<u64> = fs::read_dir(&path)?
+        .flat_map(|res| -> Result<_> { Ok(res?.path()) })
+        .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
+        .flat_map(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .map(|s| s.trim_end_matches(".log"))
+                .map(str::parse::<u64>)
+        })
+        .flatten()
+        .collect();
+    gen_list.sort_unstable();
+    Ok(gen_list)
 }
