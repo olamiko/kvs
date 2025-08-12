@@ -1,5 +1,5 @@
 use std::num::TryFromIntError;
-use std::{fmt, error, io};
+use std::{error, fmt, io};
 
 /// Error enum for kvs crate
 #[derive(Debug)]
@@ -16,6 +16,8 @@ pub enum KvsError {
     KeyDoesNotExist,
     /// Int conversion error variant for kvs crate
     TryFromInt(TryFromIntError),
+    /// Unknown Command Type
+    UnexpectedCommandType,
 }
 
 impl fmt::Display for KvsError {
@@ -28,7 +30,10 @@ impl fmt::Display for KvsError {
             KvsError::TryFromInt(ref err) => write!(f, "Deserialization error: {}", err),
             KvsError::KeyDoesNotExist => {
                 write!(f, "Key not found")
-            },
+            }
+            KvsError::UnexpectedCommandType => {
+                write!(f, "Unexpected command type")
+            }
         }
     }
 }

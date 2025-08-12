@@ -173,6 +173,15 @@ impl KvStore {
         })
     }
 
+    /// Gets the string value of a given string key
+    ///
+    /// Returns `None` if the given key does not exist
+    ///
+    /// # Errors
+    ///
+    /// It propagates I/O or deserialization errors during log replay.
+    /// Also returns `KvsError::UnexpectedCommandType` if the given command type is unexpected
+    ///
     /// ```
     /// # use kvs::KvStore;
     /// #
@@ -183,20 +192,20 @@ impl KvStore {
     /// # }
     /// ```
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        let data_offset = self.elements.get(&key);
-        if data_offset.is_none() {
-            return Ok(None);
+        if let Some(cmd_pos) = self.index.get(&key) {
+            let reader = self
+                .readers
+                .get_mut(&cmd_pos.gen)
+                .expect("Cannot find log reader");
+            reader.seek(SeekFrom::Start(cmd_pos.pos));
+            if let KvsLogLine::Set { key, value } = deserialize_from_log(reader)? {
+                Ok(Some(value))
+            } else {
+                Err(KvsError::UnexpectedCommandType)
+            }
+        } else {
+            Ok(None)
         }
-
-        // Unwrapping here since we can be sure `data_offset` isn't None
-        let offset = *data_offset.unwrap();
-        self.read_file_handle.seek(io::SeekFrom::Start(offset))?;
-
-        let kvslogline = KvStore::deserialize_from_log(&mut self.read_file_handle)?;
-        if let KvsLogLine::Set { key: _, value } = kvslogline {
-            return Ok(Some(value));
-        }
-        Ok(None)
     }
 
     /// Sets the value of a string key to a string
