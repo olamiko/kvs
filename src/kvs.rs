@@ -197,7 +197,7 @@ impl KvStore {
                 .readers
                 .get_mut(&cmd_pos.gen)
                 .expect("Cannot find log reader");
-            reader.seek(SeekFrom::Start(cmd_pos.pos));
+            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
             if let KvsLogLine::Set { key: _, value } = deserialize_from_log(reader)? {
                 Ok(Some(value))
             } else {
@@ -265,7 +265,7 @@ impl KvStore {
             return Err(KvsError::KeyDoesNotExist);
         }
         let logline = KvsLogLine::Rm { key: key.clone() };
-        serialize_to_log(&mut self.writer, logline);
+        serialize_to_log(&mut self.writer, logline)?;
         // remove the element from the index
         if let Some(old_cmd) = self.index.remove(&key) {
             self.uncompacted += old_cmd.len;
@@ -273,50 +273,57 @@ impl KvStore {
         Ok(())
     }
 
+    /// Clears stale entries in the log
     fn compaction(&mut self) -> Result<()> {
-        // create temporary file
-        // can we get the directory from current file handle? Yes, done
-        let dir_path = self.directory_path.parent().unwrap();
-        let directory = File::open(dir_path)?;
+        // Increase current gen by 2. Current gen + 1 is for the compaction file.
 
-        let temp_path = self.directory_path.clone().with_file_name("temp_log.log");
-        let w = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&temp_path)?;
+        let compaction_gen = self.current_gen + 1;
+        self.current_gen += 2;
+        self.writer = self.new_log_file(self.current_gen)?;
 
-        let mut buf_writer = BufWriter::new(w);
+        let mut compaction_writer = self.new_log_file(compaction_gen)?;
 
-        // create struct fields that need to be changed
-        let r = OpenOptions::new().read(true).open(&temp_path)?;
-        let buf_reader = BufReader::new(r);
-        let mut elements: HashMap<String, u64> = HashMap::new();
+        let mut new_pos = 0;
 
-        // write all current index to temp file
-        for (key, &old_offset) in &self.elements {
-            // deserialize to get the value from the old file
-            self.read_file_handle
-                .seek(io::SeekFrom::Start(old_offset))?;
-            let kvslogline = KvStore::deserialize_from_log(&mut self.read_file_handle)?;
+        for cmd_pos in &mut self.index.values_mut() {
+            let reader = self
+                .readers
+                .get_mut(&cmd_pos.gen)
+                .expect("Cannot find log reader");
+            if reader.pos != cmd_pos.pos {
+                reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+            }
 
-            // serialize to the new file
-            let new_offset = KvStore::serialize_to_log(&mut buf_writer, kvslogline)?;
-            elements.insert(key.to_string(), new_offset);
+            let mut entry_reader = reader.take(cmd_pos.len);
+            let len = io::copy(&mut entry_reader, &mut compaction_writer)?;
+
+            *cmd_pos = (compaction_gen, new_pos..new_pos + len).into();
+            new_pos += len;
         }
 
-        // mv temp file to the operating file
-        // w.sync_all()?; //sync file
-        buf_writer.flush()?;
-        fs::rename(temp_path, &self.directory_path)?; // rename the file
-        directory.sync_all()?; // sync the directory
+        // remove stale log files
+        let stale_gens: Vec<_> = self
+            .readers
+            .keys()
+            .filter(|&&gen| gen < compaction_gen)
+            .cloned()
+            .collect();
 
-        // set the new parameters into self
-        self.elements = elements;
-        self.write_file_handle = buf_writer;
-        self.read_file_handle = buf_reader;
-        self.stale_entries = 0;
+        for stale_gen in stale_gens {
+            self.readers.remove(&stale_gen);
+            fs::remove_file(log_path(&self.path, stale_gen))?;
+        }
+
+        self.uncompacted = 0;
 
         Ok(())
+    }
+
+    /// Create a new log file with given generation number and add the reader to the readers map
+    ///
+    /// Returns the writer to the log
+    fn new_log_file(&mut self, gen: u64) -> Result<BufWriterWithPos<File>> {
+        new_log_file(&self.path, gen, &mut self.readers)
     }
 }
 
