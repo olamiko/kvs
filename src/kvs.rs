@@ -63,7 +63,7 @@ struct BufReaderWithPos<R: Read + Seek> {
 
 impl<R: Read + Seek> BufReaderWithPos<R> {
     fn new(mut inner: R) -> Result<Self> {
-        let pos = inner.seek(io::SeekFrom::Current(0))?;
+        let pos = inner.stream_position()?; 
         Ok(BufReaderWithPos {
             reader: BufReader::new(inner),
             pos,
@@ -81,7 +81,7 @@ impl<R: Read + Seek> Read for BufReaderWithPos<R> {
         Ok(len)
     }
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        self.reader.read_exact(buf);
+        self.reader.read_exact(buf)?;
         self.pos += buf.len() as u64;
         Ok(())
     }
@@ -101,7 +101,7 @@ struct BufWriterWithPos<W: Write + Seek> {
 
 impl<W: Write + Seek> BufWriterWithPos<W> {
     fn new(mut inner: W) -> Result<Self> {
-        let pos = inner.seek(SeekFrom::Current(0))?;
+        let pos = inner.stream_position()?;
         Ok(BufWriterWithPos {
             writer: BufWriter::new(inner),
             pos,
@@ -336,7 +336,6 @@ fn new_log_file(
     let writer = BufWriterWithPos::new(
         OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(&path)?,
     )?;
@@ -349,8 +348,8 @@ fn serialize_to_log(write_handle: &mut BufWriterWithPos<File>, logline: KvsLogLi
     logline.serialize(&mut s)?;
     // serialize to the log
     let size: u32 = s.view().len().try_into().unwrap();
-    write_handle.write(&(size.to_le_bytes()))?;
-    write_handle.write(s.take_buffer().as_slice())?;
+    write_handle.write_all(&(size.to_le_bytes()))?;
+    write_handle.write_all(s.take_buffer().as_slice())?;
     write_handle.flush()?;
     Ok(())
 }
@@ -400,7 +399,7 @@ fn log_path(path: &Path, gen: u64) -> PathBuf {
 }
 
 fn sorted_gen_list(path: &Path) -> Result<Vec<u64>> {
-    let mut gen_list: Vec<u64> = fs::read_dir(&path)?
+    let mut gen_list: Vec<u64> = fs::read_dir(path)?
         .flat_map(|res| -> Result<_> { Ok(res?.path()) })
         .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
         .flat_map(|path| {
