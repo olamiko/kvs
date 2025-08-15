@@ -1,12 +1,14 @@
 use clap::{Parser, Subcommand};
 use kvs::{KvStore, KvsError, Result};
-use std::path::Path;
+use std::{net::{IpAddr, SocketAddr}, path::Path};
 
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    #[arg(long, value_name = "IP:PORT", global=true)]
+    addr: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -18,6 +20,12 @@ enum Commands {
 
 pub fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
+    let mut ip_port: SocketAddr = "127.0.0.1:4000".parse()?;
+
+    if let Some(ipaddr) = cli.addr.as_deref() {
+        ip_port = ipaddr.parse()?;
+    }
+
     let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
     match &cli.command {
