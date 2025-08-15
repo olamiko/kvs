@@ -1,5 +1,8 @@
 use slog::*;
-use std::net::{SocketAddr, TcpListener};
+use std::{
+    io::{BufReader, Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
+};
 
 use clap::Parser;
 use kvs::{KvsError, Result};
@@ -11,14 +14,19 @@ struct Cli {
     #[arg(long, value_name = "IP:PORT")]
     addr: Option<String>,
 }
-pub fn main() -> Result<()> {
-    let cli: Cli = Cli::parse();
-    // set up logging
+
+fn setup_logging() -> Logger {
     let decorator = slog_term::TermDecorator::new().stderr().build();
     let drain = slog_term::CompactFormat::new(decorator).build().fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
 
-    let log = slog::Logger::root(drain, o!());
+    return slog::Logger::root(drain, o!());
+}
+
+pub fn main() -> Result<()> {
+    let cli: Cli = Cli::parse();
+    // set up logging
+    let log = setup_logging();
 
     info!(log, "Server Startup"; "Server Version Number" => env!("CARGO_PKG_VERSION"));
 
@@ -40,8 +48,23 @@ pub fn main() -> Result<()> {
     let listener = TcpListener::bind(ip_port)?;
 
     for stream in listener.incoming() {
-        // handle_connection(stream?);
+        info!(log, "Received a Connection");
+        handle_connection(stream?, &log)?;
     }
 
+    Ok(())
+}
+
+fn handle_connection(mut stream: TcpStream, log: &Logger) -> Result<()> {
+    let mut buf_reader = BufReader::new(std::io::Read::by_ref(&mut stream));
+    let mut buf = String::new();
+    buf_reader.read_to_string(&mut buf)?;
+
+    // let content = String::from_utf8_lossy(&buf).to_string();
+    info!(log, "Received Content"; "stream content" => &buf);
+    if buf == "TCP Handshake" {
+        info!(log, "Received TCP Handshake");
+        stream.write_all(b"Welcome to KVS")?;
+    }
     Ok(())
 }

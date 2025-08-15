@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use kvs::{KvStore, KvsError, Result};
-use std::{net::SocketAddr, path::Path};
+use std::{
+    io::{Read, Write}, net::{SocketAddr, TcpStream}, path::Path
+};
 
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
@@ -25,6 +27,10 @@ pub fn main() -> Result<()> {
     if let Some(ipaddr) = cli.addr.as_deref() {
         ip_port = ipaddr.parse()?;
     }
+
+    // Connect to server
+    let mut stream = TcpStream::connect(ip_port)?;
+    stream.write_all(b"TCP Handshake")?;
 
     let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
