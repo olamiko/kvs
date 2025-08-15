@@ -17,6 +17,13 @@ pub type Result<T> = result::Result<T, KvsError>;
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
+/// The trait for kvs store
+pub trait KvsEngine {
+    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn get(&mut self, key: String) -> Result<Option<String>>;
+    fn remove(&mut self, key: String) -> Result<()>;
+}
+
 /// The store for kvs crate
 pub struct KvStore {
     // directory for the log and other data
@@ -63,7 +70,7 @@ struct BufReaderWithPos<R: Read + Seek> {
 
 impl<R: Read + Seek> BufReaderWithPos<R> {
     fn new(mut inner: R) -> Result<Self> {
-        let pos = inner.stream_position()?; 
+        let pos = inner.stream_position()?;
         Ok(BufReaderWithPos {
             reader: BufReader::new(inner),
             pos,
@@ -333,12 +340,7 @@ fn new_log_file(
     readers: &mut HashMap<u64, BufReaderWithPos<File>>,
 ) -> Result<BufWriterWithPos<File>> {
     let path = log_path(path, gen);
-    let writer = BufWriterWithPos::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?,
-    )?;
+    let writer = BufWriterWithPos::new(OpenOptions::new().create(true).append(true).open(&path)?)?;
     readers.insert(gen, BufReaderWithPos::new(File::open(&path)?)?);
     Ok(writer)
 }

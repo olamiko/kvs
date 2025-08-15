@@ -1,13 +1,13 @@
 use clap::{Parser, Subcommand};
 use kvs::{KvStore, KvsError, Result};
-use std::{net::{IpAddr, SocketAddr}, path::Path};
+use std::{net::SocketAddr, path::Path};
 
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-    #[arg(long, value_name = "IP:PORT", global=true)]
+    #[arg(long, value_name = "IP:PORT", global = true)]
     addr: Option<String>,
 }
 

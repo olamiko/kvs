@@ -1,3 +1,4 @@
+use std::net::AddrParseError;
 use std::num::TryFromIntError;
 use std::{error, fmt, io};
 
@@ -18,6 +19,10 @@ pub enum KvsError {
     TryFromInt(TryFromIntError),
     /// Unknown Command Type
     UnexpectedCommandType,
+    /// IP Address Parse Error
+    AddrParseError(AddrParseError),
+    /// Unknown Engine Type
+    UnknownEngineType(String),
 }
 
 impl fmt::Display for KvsError {
@@ -34,6 +39,8 @@ impl fmt::Display for KvsError {
             KvsError::UnexpectedCommandType => {
                 write!(f, "Unexpected command type")
             }
+            KvsError::AddrParseError(ref err) => write!(f, "IP Address Parse error: {}", err),
+            KvsError::UnknownEngineType(eng_type) => write!(f, "Unknown Engine type: {}", eng_type),
         }
     }
 }
@@ -67,5 +74,11 @@ impl From<flexbuffers::ReaderError> for KvsError {
 impl From<TryFromIntError> for KvsError {
     fn from(err: TryFromIntError) -> Self {
         KvsError::TryFromInt(err)
+    }
+}
+
+impl From<AddrParseError> for KvsError {
+    fn from(err: AddrParseError) -> Self {
+        KvsError::AddrParseError(err)
     }
 }
