@@ -1,3 +1,4 @@
+use slog::*;
 use std::net::{SocketAddr, TcpListener};
 
 use clap::Parser;
@@ -12,6 +13,15 @@ struct Cli {
 }
 pub fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
+    // set up logging
+    let decorator = slog_term::TermDecorator::new().stderr().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    let log = slog::Logger::root(drain, o!());
+
+    info!(log, "Server Startup"; "Server Version Number" => env!("CARGO_PKG_VERSION"));
+
     let mut ip_port: SocketAddr = "127.0.0.1:4000".parse()?;
     let mut engine_name = "kvs";
 
@@ -26,9 +36,10 @@ pub fn main() -> Result<()> {
         }
     }
 
+    info!(log, "Received Configuration"; "Engine name" => engine_name, "Ip Address and Port" => ip_port);
     let listener = TcpListener::bind(ip_port)?;
 
-    for stream in listener.incoming(){
+    for stream in listener.incoming() {
         // handle_connection(stream?);
     }
 
