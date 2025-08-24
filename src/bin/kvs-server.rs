@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::Parser;
-use kvs::{KvStore, KvsError, NetworkCommand, Result};
+use kvs::{Commands, KvStore, KvsError, NetworkCommand, Result};
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
 struct Cli {
@@ -70,13 +70,13 @@ fn handle_connection(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -
         NetworkCommand::Response { value } => todo!(),
         NetworkCommand::Error { error } => todo!(),
         NetworkCommand::Request { command } => match command {
-            kvs::CommandType::Get { key } => {
+            Commands::Get { key } => {
                 store.get(key)?;
             }
-            kvs::CommandType::Set { key, value } => {
+            Commands::Set { key, value } => {
                 store.set(key, value)?;
             }
-            kvs::CommandType::Rm { key } => {
+            Commands::Rm { key } => {
                 store.remove(key)?;
             },
         },

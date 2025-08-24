@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use kvs::NetworkCommand;
+use kvs::{Commands, NetworkCommand};
 
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
@@ -16,13 +16,6 @@ struct Cli {
     command: Commands,
     #[arg(long, value_name = "IP:PORT", global = true)]
     addr: Option<String>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    Set { key: String, value: String },
-    Get { key: String },
-    Rm { key: String },
 }
 
 // struct NetworkMessage {
@@ -66,54 +59,63 @@ pub fn main() -> Result<()> {
     let mut stream = TcpStream::connect(ip_port)?;
     let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
-    match &cli.command {
-        Commands::Set { key, value } => {
-            let message = NetworkCommand::Request {
-                command: kvs::CommandType::Set {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                },
-            }
-            .serialize_command()?;
-            stream.write_all(message.as_slice())?;
-
-            // let mut buf = Vec::new();
-            // stream.read_to_end(&mut buf)?;
-            // let response = NetworkCommand::deserialize_command(buf)?;
-
-            // if let NetworkCommand::Error { error } = response {
-            //     println!("{}", error);
-            //     // return Err(error);
-            // }
-
-            // if let Err(err) = store.set(key.to_string(), value.to_string()) {
-            // println!("{}", err);
-            // return Err(err);
-            // }
-            Ok(())
-        }
-        Commands::Get { key } => {
-            let value = store.get(key.to_string());
-            match value {
-                Ok(val) => match val {
-                    Some(val) => println!("{}", val),
-                    None => println!("{}", KvsError::KeyDoesNotExist),
-                },
-                Err(err) => match err {
-                    KvsError::KeyDoesNotExist => {
-                        println!("{}", KvsError::KeyDoesNotExist);
-                    }
-                    _ => return Err(err),
-                },
-            }
-            Ok(())
-        }
-        Commands::Rm { key } => {
-            if let Err(err) = store.remove(key.to_string()) {
-                println!("{}", err);
-                return Err(err);
-            }
-            Ok(())
-        }
+    let message = NetworkCommand::Request {
+        command: cli.command,
     }
+    .serialize_command()?;
+    stream.write_all(message.as_slice())?;
+
+    // How to check if there's a response and then read the response
+    // Let the server always respond even if it is a simple OK :)
+    Ok(())
+    // match &cli.command {
+    //     Commands::Set { key, value } => {
+    //         let message = NetworkCommand::Request {
+    //             command: Commands::Set {
+    //                 key: key.to_string(),
+    //                 value: value.to_string(),
+    //             },
+    //         }
+    //         .serialize_command()?;
+    //         stream.write_all(message.as_slice())?;
+
+    //         // let mut buf = Vec::new();
+    //         // stream.read_to_end(&mut buf)?;
+    //         // let response = NetworkCommand::deserialize_command(buf)?;
+
+    //         // if let NetworkCommand::Error { error } = response {
+    //         //     println!("{}", error);
+    //         //     // return Err(error);
+    //         // }
+
+    //         // if let Err(err) = store.set(key.to_string(), value.to_string()) {
+    //         // println!("{}", err);
+    //         // return Err(err);
+    //         // }
+    //         Ok(())
+    //     }
+    //     Commands::Get { key } => {
+    //         let value = store.get(key.to_string());
+    //         match value {
+    //             Ok(val) => match val {
+    //                 Some(val) => println!("{}", val),
+    //                 None => println!("{}", KvsError::KeyDoesNotExist),
+    //             },
+    //             Err(err) => match err {
+    //                 KvsError::KeyDoesNotExist => {
+    //                     println!("{}", KvsError::KeyDoesNotExist);
+    //                 }
+    //                 _ => return Err(err),
+    //             },
+    //         }
+    //         Ok(())
+    //     }
+    //     Commands::Rm { key } => {
+    //         if let Err(err) = store.remove(key.to_string()) {
+    //             println!("{}", err);
+    //             return Err(err);
+    //         }
+    //         Ok(())
+    //     }
+    // }
 }

@@ -2,18 +2,19 @@
 // Our KVS supports only 3 commands i.e., set k v, get k, rm k; All the elements are strings. So we will use an enum to represent and then we can serialize / deserialize that
 
 use crate::{KvsError, Result};
+use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum CommandType {
-    Get { key: String },
+#[derive(Subcommand, Debug, Serialize, Deserialize)]
+pub enum Commands {
     Set { key: String, value: String },
+    Get { key: String },
     Rm { key: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum NetworkCommand {
-    Request { command: CommandType },
+    Request { command: Commands },
     Response { value: String },
     Error { error: String },
 }
