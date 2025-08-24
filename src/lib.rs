@@ -3,6 +3,8 @@
 //! Implemtation for the kvs crate
 pub use error::{KvsError};
 pub use kvs::{KvStore, KvsEngine, Result};
+pub use common::{NetworkCommand, CommandType};
 
 mod error;
 mod kvs;
+mod common;

@@ -1,8 +1,13 @@
 use clap::{Parser, Subcommand};
 use kvs::{KvStore, KvsError, Result};
+use serde::Serialize;
 use std::{
-    io::{Read, Write}, net::{SocketAddr, TcpStream}, path::Path
+    io::{Read, Write},
+    net::{SocketAddr, TcpStream},
+    path::Path,
 };
+
+use kvs::NetworkCommand;
 
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
@@ -20,6 +25,35 @@ enum Commands {
     Rm { key: String },
 }
 
+// struct NetworkMessage {
+//     command: String,
+//     arguments: Vec<String>,
+// }
+
+// fn construct_bulk_strings(value: &str) -> String {
+//     let mut message = String::new();
+//     message.push('$');
+//     message.push_str(&value.len().to_string());
+//     message.push_str(value);
+//     message.push_str("/r/n");
+
+//     message
+// }
+
+// fn construct_network_message(network_message: NetworkMessage) -> String {
+//     let mut message = String::new();
+//     message.push('*');
+//     message.push_str(&(&network_message.arguments.len() + 1).to_string());
+//     message.push_str("/r/n");
+
+//     message.push_str(&construct_bulk_strings(&network_message.command));
+//     for arg in &network_message.arguments {
+//         message.push_str(&construct_bulk_strings(arg));
+//     }
+
+//     message
+// }
+
 pub fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
     let mut ip_port: SocketAddr = "127.0.0.1:4000".parse()?;
@@ -30,16 +64,32 @@ pub fn main() -> Result<()> {
 
     // Connect to server
     let mut stream = TcpStream::connect(ip_port)?;
-    stream.write_all(b"TCP Handshake")?;
-
     let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
     match &cli.command {
         Commands::Set { key, value } => {
-            if let Err(err) = store.set(key.to_string(), value.to_string()) {
-                println!("{}", err);
-                return Err(err);
+            let message = NetworkCommand::Request {
+                command: kvs::CommandType::Set {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                },
             }
+            .serialize_command()?;
+            stream.write_all(message.as_slice())?;
+
+            // let mut buf = Vec::new();
+            // stream.read_to_end(&mut buf)?;
+            // let response = NetworkCommand::deserialize_command(buf)?;
+
+            // if let NetworkCommand::Error { error } = response {
+            //     println!("{}", error);
+            //     // return Err(error);
+            // }
+
+            // if let Err(err) = store.set(key.to_string(), value.to_string()) {
+            // println!("{}", err);
+            // return Err(err);
+            // }
             Ok(())
         }
         Commands::Get { key } => {

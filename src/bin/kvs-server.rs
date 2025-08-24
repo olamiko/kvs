@@ -2,10 +2,11 @@ use slog::*;
 use std::{
     io::{BufReader, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    path::Path,
 };
 
 use clap::Parser;
-use kvs::{KvsError, Result};
+use kvs::{KvStore, KvsError, NetworkCommand, Result};
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
 struct Cli {
@@ -25,6 +26,9 @@ fn setup_logging() -> Logger {
 
 pub fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
+    // Open store
+    let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
+
     // set up logging
     let log = setup_logging();
 
@@ -49,22 +53,46 @@ pub fn main() -> Result<()> {
 
     for stream in listener.incoming() {
         info!(log, "Received a Connection");
-        handle_connection(stream?, &log)?;
+        handle_connection(stream?, &mut store, &log)?;
     }
 
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream, log: &Logger) -> Result<()> {
+fn handle_connection(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> Result<()> {
     let mut buf_reader = BufReader::new(std::io::Read::by_ref(&mut stream));
-    let mut buf = String::new();
-    buf_reader.read_to_string(&mut buf)?;
+    let mut buf = Vec::new();
+    buf_reader.read_to_end(&mut buf)?;
+    println!("{:?}", buf);
+    let message = NetworkCommand::deserialize_command(buf)?;
+
+    match message {
+        NetworkCommand::Response { value } => todo!(),
+        NetworkCommand::Error { error } => todo!(),
+        NetworkCommand::Request { command } => match command {
+            kvs::CommandType::Get { key } => {
+                store.get(key)?;
+            }
+            kvs::CommandType::Set { key, value } => {
+                store.set(key, value)?;
+            }
+            kvs::CommandType::Rm { key } => {
+                store.remove(key)?;
+            },
+        },
+    }
+
+    // Do I need a connection statement to show that all went well?
+    // Do I want to keep the client connection open for reuse?
+
+    // let mut buf = String::new();
+    // buf_reader.read_to_string(&mut buf)?;
 
     // let content = String::from_utf8_lossy(&buf).to_string();
-    info!(log, "Received Content"; "stream content" => &buf);
-    if buf == "TCP Handshake" {
-        info!(log, "Received TCP Handshake");
-        stream.write_all(b"Welcome to KVS")?;
-    }
+    // info!(log, "Received Content"; "stream content" =>message);
+    // if buf == "TCP Handshake" {
+    //     info!(log, "Received TCP Handshake");
+    //     stream.write_all(b"Welcome to KVS")?;
+    // }
     Ok(())
 }
