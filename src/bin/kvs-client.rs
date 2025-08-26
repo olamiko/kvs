@@ -1,13 +1,11 @@
-use clap::{Parser, Subcommand};
-use kvs::{KvStore, KvsError, Result};
-use serde::Serialize;
+use clap::Parser;
+use kvs::Result;
+use kvs::{Commands, NetworkCommand};
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    path::Path,
+    process::exit,
 };
-
-use kvs::{Commands, NetworkCommand};
 
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
@@ -17,35 +15,6 @@ struct Cli {
     #[arg(long, value_name = "IP:PORT", global = true)]
     addr: Option<String>,
 }
-
-// struct NetworkMessage {
-//     command: String,
-//     arguments: Vec<String>,
-// }
-
-// fn construct_bulk_strings(value: &str) -> String {
-//     let mut message = String::new();
-//     message.push('$');
-//     message.push_str(&value.len().to_string());
-//     message.push_str(value);
-//     message.push_str("/r/n");
-
-//     message
-// }
-
-// fn construct_network_message(network_message: NetworkMessage) -> String {
-//     let mut message = String::new();
-//     message.push('*');
-//     message.push_str(&(&network_message.arguments.len() + 1).to_string());
-//     message.push_str("/r/n");
-
-//     message.push_str(&construct_bulk_strings(&network_message.command));
-//     for arg in &network_message.arguments {
-//         message.push_str(&construct_bulk_strings(arg));
-//     }
-
-//     message
-// }
 
 pub fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
@@ -57,7 +26,6 @@ pub fn main() -> Result<()> {
 
     // Connect to server
     let mut stream = TcpStream::connect(ip_port)?;
-    let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
     let message = NetworkCommand::Request {
         command: cli.command,
@@ -65,8 +33,27 @@ pub fn main() -> Result<()> {
     .serialize_command()?;
     stream.write_all(message.as_slice())?;
 
-    // How to check if there's a response and then read the response
-    // Let the server always respond even if it is a simple OK :)
+    // Get response
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf)?;
+    let response = NetworkCommand::deserialize_command(buf)?;
+
+    match response {
+        NetworkCommand::Response { value } => {
+            println!("{}", value);
+        }
+        NetworkCommand::Error { error } => {
+            println!("{}", error);
+            exit(1);
+        }
+        _ => {
+            println!("Unexpected from server: {:?}", response);
+            exit(1);
+        },
+    }
+
+    // How to check if there's a response and then read the response (Done)
+    // Let the server always respond even if it is a simple OK :) (Done)
     Ok(())
     // match &cli.command {
     //     Commands::Set { key, value } => {

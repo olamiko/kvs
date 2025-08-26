@@ -1,3 +1,5 @@
+use clap::Parser;
+use kvs::{Commands, KvStore, KvsError, NetworkCommand, Result};
 use slog::*;
 use std::{
     io::{BufReader, Read, Write},
@@ -5,8 +7,6 @@ use std::{
     path::Path,
 };
 
-use clap::Parser;
-use kvs::{Commands, KvStore, KvsError, NetworkCommand, Result};
 #[derive(Parser)]
 #[command(version, about, propagate_version = true)]
 struct Cli {
@@ -24,6 +24,11 @@ fn setup_logging() -> Logger {
     return slog::Logger::root(drain, o!());
 }
 
+fn server_response(network_command: NetworkCommand, stream: &mut TcpStream) -> Result<()> {
+    stream.write_all(network_command.serialize_command()?.as_slice());
+    Ok(())
+}
+
 pub fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
     // Open store
@@ -31,7 +36,6 @@ pub fn main() -> Result<()> {
 
     // set up logging
     let log = setup_logging();
-
     info!(log, "Server Startup"; "Server Version Number" => env!("CARGO_PKG_VERSION"));
 
     let mut ip_port: SocketAddr = "127.0.0.1:4000".parse()?;
@@ -53,46 +57,91 @@ pub fn main() -> Result<()> {
 
     for stream in listener.incoming() {
         info!(log, "Received a Connection");
-        handle_connection(stream?, &mut store, &log)?;
+        handle_request(stream?, &mut store, &log)?;
     }
 
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> Result<()> {
+fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> Result<()> {
     let mut buf_reader = BufReader::new(std::io::Read::by_ref(&mut stream));
     let mut buf = Vec::new();
     buf_reader.read_to_end(&mut buf)?;
     println!("{:?}", buf);
-    let message = NetworkCommand::deserialize_command(buf)?;
 
-    match message {
-        NetworkCommand::Response { value } => todo!(),
-        NetworkCommand::Error { error } => todo!(),
-        NetworkCommand::Request { command } => match command {
+    let message = NetworkCommand::deserialize_command(buf)?;
+    if let NetworkCommand::Request { command } = message {
+        match command {
             Commands::Get { key } => {
-                store.get(key)?;
+                let value = store.get(key);
+                match value {
+                    Ok(val) => match val {
+                        Some(val) => {
+                            server_response(NetworkCommand::Response { value: val }, &mut stream)?
+                        }
+                        None => server_response(
+                            NetworkCommand::Error {
+                                error: KvsError::KeyDoesNotExist.to_string(),
+                            },
+                            &mut stream,
+                        )?,
+                    },
+                    Err(err) => match err {
+                        KvsError::KeyDoesNotExist => server_response(
+                            NetworkCommand::Response {
+                                value: "".to_string(),
+                            },
+                            &mut stream,
+                        )?,
+                        _ => server_response(
+                            NetworkCommand::Error {
+                                error: err.to_string(),
+                            },
+                            &mut stream,
+                        )?,
+                    },
+                }
             }
             Commands::Set { key, value } => {
-                store.set(key, value)?;
+                if let Err(err) = store.set(key, value) {
+                    server_response(
+                        NetworkCommand::Error {
+                            error: err.to_string(),
+                        },
+                        &mut stream,
+                    )?
+                } else {
+                    server_response(
+                        NetworkCommand::Response {
+                            value: "".to_string(),
+                        },
+                        &mut stream,
+                    )?
+                }
             }
             Commands::Rm { key } => {
-                store.remove(key)?;
-            },
-        },
+                if let Err(err) = store.remove(key) {
+                    server_response(
+                        NetworkCommand::Error {
+                            error: err.to_string(),
+                        },
+                        &mut stream,
+                    )?
+                } else {
+                    server_response(
+                        NetworkCommand::Response {
+                            value: "".to_string(),
+                        },
+                        &mut stream,
+                    )?
+                }
+            }
+        }
+    } else {
+        // Send server response that we don't know what is meant
     }
 
     // Do I need a connection statement to show that all went well?
-    // Do I want to keep the client connection open for reuse?
-
-    // let mut buf = String::new();
-    // buf_reader.read_to_string(&mut buf)?;
-
-    // let content = String::from_utf8_lossy(&buf).to_string();
-    // info!(log, "Received Content"; "stream content" =>message);
-    // if buf == "TCP Handshake" {
-    //     info!(log, "Received TCP Handshake");
-    //     stream.write_all(b"Welcome to KVS")?;
-    // }
+    // Do I want to keep the client connection open for reuse? (No)
     Ok(())
 }
