@@ -37,18 +37,33 @@ pub enum NetworkCommand {
 // }
 
 impl NetworkCommand {
+    /// Returns the serialize command of this [`NetworkCommand`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
     pub fn serialize_command(&self) -> Result<Vec<u8>> {
         let mut s = flexbuffers::FlexbufferSerializer::new();
         self.serialize(&mut s)?;
         Ok(s.take_buffer())
     }
 
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
     pub fn deserialize_command(buf: Vec<u8>) -> Result<NetworkCommand> {
         let r = flexbuffers::Reader::get_root(buf.as_slice())?;
         Ok(NetworkCommand::deserialize(r)?)
     }
 }
 
+/// .
+///
+/// # Errors
+///
+/// This function will return an error if .
 pub fn send_network_message(network_command: NetworkCommand, stream: &mut TcpStream) -> Result<()> {
     let message = network_command.serialize_command()?;
     stream.write_all(&message.len().to_le_bytes())?;
@@ -58,6 +73,15 @@ pub fn send_network_message(network_command: NetworkCommand, stream: &mut TcpStr
     Ok(())
 }
 
+/// .
+///
+/// # Panics
+///
+/// Panics if .
+///
+/// # Errors
+///
+/// This function will return an error if .
 pub fn receive_network_message(stream: &mut TcpStream) -> Result<Vec<u8>> {
     let mut buf_reader = BufReader::new(stream);
     let mut buf: Vec<u8> = Vec::new();
