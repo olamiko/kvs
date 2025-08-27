@@ -1,5 +1,5 @@
 use clap::Parser;
-use kvs::{Commands, KvStore, KvsError, NetworkCommand, Result};
+use kvs::{receive_network_message, send_network_message, Commands, KvStore, KvsError, NetworkCommand, Result};
 use slog::*;
 use std::{
     io::{BufReader, Read, Write},
@@ -21,12 +21,7 @@ fn setup_logging() -> Logger {
     let drain = slog_term::CompactFormat::new(decorator).build().fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
 
-    return slog::Logger::root(drain, o!());
-}
-
-fn server_response(network_command: NetworkCommand, stream: &mut TcpStream) -> Result<()> {
-    stream.write_all(network_command.serialize_command()?.as_slice());
-    Ok(())
+    slog::Logger::root(drain, o!())
 }
 
 pub fn main() -> Result<()> {
@@ -64,12 +59,11 @@ pub fn main() -> Result<()> {
 }
 
 fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> Result<()> {
-    let mut buf_reader = BufReader::new(std::io::Read::by_ref(&mut stream));
-    let mut buf = Vec::new();
-    buf_reader.read_to_end(&mut buf)?;
-    println!("{:?}", buf);
+    let buf = receive_network_message(&mut stream)?;
 
     let message = NetworkCommand::deserialize_command(buf)?;
+
+    info!(log, "Parsing a network message");
     if let NetworkCommand::Request { command } = message {
         match command {
             Commands::Get { key } => {
@@ -77,9 +71,9 @@ fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> R
                 match value {
                     Ok(val) => match val {
                         Some(val) => {
-                            server_response(NetworkCommand::Response { value: val }, &mut stream)?
+                            send_network_message(NetworkCommand::Response { value: val }, &mut stream)?
                         }
-                        None => server_response(
+                        None => send_network_message(
                             NetworkCommand::Error {
                                 error: KvsError::KeyDoesNotExist.to_string(),
                             },
@@ -87,13 +81,13 @@ fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> R
                         )?,
                     },
                     Err(err) => match err {
-                        KvsError::KeyDoesNotExist => server_response(
+                        KvsError::KeyDoesNotExist => send_network_message(
                             NetworkCommand::Response {
-                                value: "".to_string(),
+                                value: err.to_string(),
                             },
                             &mut stream,
                         )?,
-                        _ => server_response(
+                        _ => send_network_message(
                             NetworkCommand::Error {
                                 error: err.to_string(),
                             },
@@ -104,44 +98,35 @@ fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> R
             }
             Commands::Set { key, value } => {
                 if let Err(err) = store.set(key, value) {
-                    server_response(
+                    send_network_message(
                         NetworkCommand::Error {
                             error: err.to_string(),
                         },
                         &mut stream,
                     )?
-                } else {
-                    server_response(
-                        NetworkCommand::Response {
-                            value: "".to_string(),
-                        },
-                        &mut stream,
-                    )?
                 }
+                send_network_message(NetworkCommand::Ok, &mut stream)?
             }
             Commands::Rm { key } => {
                 if let Err(err) = store.remove(key) {
-                    server_response(
+                    send_network_message(
                         NetworkCommand::Error {
                             error: err.to_string(),
                         },
                         &mut stream,
                     )?
-                } else {
-                    server_response(
-                        NetworkCommand::Response {
-                            value: "".to_string(),
-                        },
-                        &mut stream,
-                    )?
                 }
+                send_network_message(NetworkCommand::Ok, &mut stream)?
             }
         }
     } else {
-        // Send server response that we don't know what is meant
+        send_network_message(
+            NetworkCommand::Error {
+                error: "What are you sending?".to_string(),
+            },
+            &mut stream,
+        )?
     }
 
-    // Do I need a connection statement to show that all went well?
-    // Do I want to keep the client connection open for reuse? (No)
     Ok(())
 }

@@ -1,5 +1,5 @@
 use clap::Parser;
-use kvs::Result;
+use kvs::{receive_network_message, send_network_message, Result};
 use kvs::{Commands, NetworkCommand};
 use std::{
     io::{Read, Write},
@@ -27,15 +27,15 @@ pub fn main() -> Result<()> {
     // Connect to server
     let mut stream = TcpStream::connect(ip_port)?;
 
-    let message = NetworkCommand::Request {
-        command: cli.command,
-    }
-    .serialize_command()?;
-    stream.write_all(message.as_slice())?;
+    send_network_message(
+        NetworkCommand::Request {
+            command: cli.command,
+        },
+        &mut stream,
+    )?;
 
     // Get response
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf)?;
+    let buf = receive_network_message(&mut stream)?;
     let response = NetworkCommand::deserialize_command(buf)?;
 
     match response {
@@ -46,14 +46,13 @@ pub fn main() -> Result<()> {
             println!("{}", error);
             exit(1);
         }
+        NetworkCommand::Ok => (),
         _ => {
             println!("Unexpected from server: {:?}", response);
             exit(1);
-        },
+        }
     }
 
-    // How to check if there's a response and then read the response (Done)
-    // Let the server always respond even if it is a simple OK :) (Done)
     Ok(())
     // match &cli.command {
     //     Commands::Set { key, value } => {
