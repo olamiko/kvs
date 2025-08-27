@@ -2,7 +2,6 @@ use clap::Parser;
 use kvs::{receive_network_message, send_network_message, Commands, KvStore, KvsError, NetworkCommand, Result};
 use slog::*;
 use std::{
-    io::{BufReader, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::Path,
 };
