@@ -1,6 +1,6 @@
 use clap::Parser;
-use kvs::{receive_network_message, send_network_message, Result};
-use kvs::{Commands, NetworkCommand};
+use kvs::{Result};
+use kvs::{Commands, NetworkConnection};
 use std::{
     net::{SocketAddr, TcpStream},
     process::exit,
@@ -26,26 +26,26 @@ pub fn main() -> Result<()> {
     // Connect to server
     let mut stream = TcpStream::connect(ip_port)?;
 
-    send_network_message(
-        NetworkCommand::Request {
+    NetworkConnection::send_network_message(
+        NetworkConnection::Request {
             command: cli.command,
         },
         &mut stream,
     )?;
 
     // Get response
-    let buf = receive_network_message(&mut stream)?;
-    let response = NetworkCommand::deserialize_command(buf)?;
+    let buf = NetworkConnection::receive_network_message(&mut stream)?;
+    let response = NetworkConnection::deserialize_message(buf)?;
 
     match response {
-        NetworkCommand::Response { value } => {
+        NetworkConnection::Response { value } => {
             println!("{}", value);
         }
-        NetworkCommand::Error { error } => {
+        NetworkConnection::Error { error } => {
             println!("{}", error);
             exit(1);
         }
-        NetworkCommand::Ok => (),
+        NetworkConnection::Ok => (),
         _ => {
             println!("Unexpected from server: {:?}", response);
             exit(1);

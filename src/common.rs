@@ -10,22 +10,31 @@ use crate::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
+/// Enums describing the commands supported by the KVS
 #[derive(Subcommand, Debug, Serialize, Deserialize)]
 pub enum Commands {
+    /// Sets the value of a key in the database
     Set { key: String, value: String },
+    /// Gets the value of a key from the database
     Get { key: String },
+    /// Removes the key from the database
     Rm { key: String },
 }
 
+/// Describes the type of message that can be sent or received from the stream
 #[derive(Debug, Serialize, Deserialize)]
-pub enum NetworkCommand {
+pub enum NetworkConnection {
+    /// A message request usually sent by the client
     Request { command: Commands },
+    /// A message response containing a `value`
     Response { value: String },
+    /// A message signaling an error
     Error { error: String },
+    /// A message response signalling that the request was handled  
     Ok,
 }
 
-// impl slog::Value for NetworkCommand {
+// impl slog::Value for NetworkConnection {
 //     fn serialize(
 //         &self,
 //         record: &slog::Record,
@@ -36,58 +45,58 @@ pub enum NetworkCommand {
 //     }
 // }
 
-impl NetworkCommand {
-    /// Returns the serialize command of this [`NetworkCommand`].
+impl NetworkConnection {
+    /// Returns the serialized message of this [`NetworkConnection`].
     ///
     /// # Errors
     ///
-    /// This function will return an error if .
-    pub fn serialize_command(&self) -> Result<Vec<u8>> {
+    /// This function will return an error if the serialization fails
+    pub fn serialize_message(&self) -> Result<Vec<u8>> {
         let mut s = flexbuffers::FlexbufferSerializer::new();
         self.serialize(&mut s)?;
         Ok(s.take_buffer())
     }
 
-    /// .
+    /// Returns the NetworkConnection enum from a vector of bytes
     ///
     /// # Errors
     ///
-    /// This function will return an error if .
-    pub fn deserialize_command(buf: Vec<u8>) -> Result<NetworkCommand> {
+    /// This function will return an error if deserialization fails
+    pub fn deserialize_message(buf: Vec<u8>) -> Result<NetworkConnection> {
         let r = flexbuffers::Reader::get_root(buf.as_slice())?;
-        Ok(NetworkCommand::deserialize(r)?)
+        Ok(NetworkConnection::deserialize(r)?)
     }
-}
 
-/// .
-///
-/// # Errors
-///
-/// This function will return an error if .
-pub fn send_network_message(network_command: NetworkCommand, stream: &mut TcpStream) -> Result<()> {
-    let message = network_command.serialize_command()?;
-    stream.write_all(&message.len().to_le_bytes())?;
-    stream.write_all(b"\n")?;
-    stream.write_all(network_command.serialize_command()?.as_slice())?;
-    stream.flush()?;
-    Ok(())
-}
+    /// Serializes a message and sends it into a stream
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the serialization fails
+    /// or writing to the TcpStream fails
+    pub fn send_network_message(
+        network_connection: NetworkConnection,
+        stream: &mut TcpStream,
+    ) -> Result<()> {
+        let message = network_connection.serialize_message()?;
+        stream.write_all(&message.len().to_le_bytes())?;
+        stream.write_all(b"\n")?;
+        stream.write_all(network_connection.serialize_message()?.as_slice())?;
+        stream.flush()?;
+        Ok(())
+    }
 
-/// .
-///
-/// # Panics
-///
-/// Panics if .
-///
-/// # Errors
-///
-/// This function will return an error if .
-pub fn receive_network_message(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    let mut buf_reader = BufReader::new(stream);
-    let mut buf: Vec<u8> = Vec::new();
-    buf_reader.read_until(b'\n', &mut buf)?;
-    let content_size = usize::from_le_bytes(buf.trim_ascii().try_into().unwrap());
-    let mut content_buf = vec![0u8; content_size];
-    buf_reader.read_exact(&mut content_buf)?;
-    Ok(content_buf)
+    /// Receives a message from a TcpStream
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if reading from the buffer fails
+    pub fn receive_network_message(stream: &mut TcpStream) -> Result<Vec<u8>> {
+        let mut buf_reader = BufReader::new(stream);
+        let mut buf: Vec<u8> = Vec::new();
+        buf_reader.read_until(b'\n', &mut buf)?;
+        let content_size = usize::from_le_bytes(buf.trim_ascii().try_into().unwrap());
+        let mut content_buf = vec![0u8; content_size];
+        buf_reader.read_exact(&mut content_buf)?;
+        Ok(content_buf)
+    }
 }

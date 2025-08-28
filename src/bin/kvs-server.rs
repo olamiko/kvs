@@ -1,5 +1,5 @@
 use clap::Parser;
-use kvs::{receive_network_message, send_network_message, Commands, KvStore, KvsError, NetworkCommand, Result};
+use kvs::{Commands, KvStore, KvsError, NetworkConnection, Result};
 use slog::*;
 use std::{
     net::{SocketAddr, TcpListener, TcpStream},
@@ -58,36 +58,37 @@ pub fn main() -> Result<()> {
 }
 
 fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> Result<()> {
-    let buf = receive_network_message(&mut stream)?;
+    let buf = NetworkConnection::receive_network_message(&mut stream)?;
 
-    let message = NetworkCommand::deserialize_command(buf)?;
+    let message = NetworkConnection::deserialize_message(buf)?;
 
     info!(log, "Parsing a network message");
-    if let NetworkCommand::Request { command } = message {
+    if let NetworkConnection::Request { command } = message {
         match command {
             Commands::Get { key } => {
                 let value = store.get(key);
                 match value {
                     Ok(val) => match val {
-                        Some(val) => {
-                            send_network_message(NetworkCommand::Response { value: val }, &mut stream)?
-                        }
-                        None => send_network_message(
-                            NetworkCommand::Error {
+                        Some(val) => NetworkConnection::send_network_message(
+                            NetworkConnection::Response { value: val },
+                            &mut stream,
+                        )?,
+                        None => NetworkConnection::send_network_message(
+                            NetworkConnection::Error {
                                 error: KvsError::KeyDoesNotExist.to_string(),
                             },
                             &mut stream,
                         )?,
                     },
                     Err(err) => match err {
-                        KvsError::KeyDoesNotExist => send_network_message(
-                            NetworkCommand::Response {
+                        KvsError::KeyDoesNotExist => NetworkConnection::send_network_message(
+                            NetworkConnection::Response {
                                 value: err.to_string(),
                             },
                             &mut stream,
                         )?,
-                        _ => send_network_message(
-                            NetworkCommand::Error {
+                        _ => NetworkConnection::send_network_message(
+                            NetworkConnection::Error {
                                 error: err.to_string(),
                             },
                             &mut stream,
@@ -97,35 +98,28 @@ fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> R
             }
             Commands::Set { key, value } => {
                 if let Err(err) = store.set(key, value) {
-                    send_network_message(
-                        NetworkCommand::Error {
+                    NetworkConnection::send_network_message(
+                        NetworkConnection::Error {
                             error: err.to_string(),
                         },
                         &mut stream,
                     )?
                 }
-                send_network_message(NetworkCommand::Ok, &mut stream)?
+                NetworkConnection::send_network_message(NetworkConnection::Ok, &mut stream)?
             }
             Commands::Rm { key } => {
                 if let Err(err) = store.remove(key) {
-                    send_network_message(
-                        NetworkCommand::Error {
+                    NetworkConnection::send_network_message(
+                        NetworkConnection::Error {
                             error: err.to_string(),
                         },
                         &mut stream,
                     )?
                 }
-                send_network_message(NetworkCommand::Ok, &mut stream)?
+                NetworkConnection::send_network_message(NetworkConnection::Ok, &mut stream)?
             }
         }
-    } else {
-        send_network_message(
-            NetworkCommand::Error {
-                error: "What are you sending?".to_string(),
-            },
-            &mut stream,
-        )?
-    }
+    } // Drop any other network command type sent to server silently
 
     Ok(())
 }
