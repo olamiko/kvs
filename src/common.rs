@@ -34,17 +34,6 @@ pub enum NetworkConnection {
     Ok,
 }
 
-// impl slog::Value for NetworkConnection {
-//     fn serialize(
-//         &self,
-//         record: &slog::Record,
-//         key: slog::Key,
-//         serializer: &mut dyn slog::Serializer,
-//     ) -> slog::Result {
-//         unimplemented!()
-//     }
-// }
-
 impl NetworkConnection {
     /// Returns the serialized message of this [`NetworkConnection`].
     ///

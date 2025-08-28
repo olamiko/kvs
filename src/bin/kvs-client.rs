@@ -42,7 +42,7 @@ pub fn main() -> Result<()> {
             println!("{}", value);
         }
         NetworkConnection::Error { error } => {
-            println!("{}", error);
+            eprintln!("{}", error);
             exit(1);
         }
         NetworkConnection::Ok => (),

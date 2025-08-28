@@ -74,26 +74,18 @@ fn handle_request(mut stream: TcpStream, store: &mut KvStore, log: &Logger) -> R
                             &mut stream,
                         )?,
                         None => NetworkConnection::send_network_message(
-                            NetworkConnection::Error {
-                                error: KvsError::KeyDoesNotExist.to_string(),
-                            },
-                            &mut stream,
-                        )?,
-                    },
-                    Err(err) => match err {
-                        KvsError::KeyDoesNotExist => NetworkConnection::send_network_message(
                             NetworkConnection::Response {
-                                value: err.to_string(),
-                            },
-                            &mut stream,
-                        )?,
-                        _ => NetworkConnection::send_network_message(
-                            NetworkConnection::Error {
-                                error: err.to_string(),
+                                value: KvsError::KeyDoesNotExist.to_string(),
                             },
                             &mut stream,
                         )?,
                     },
+                    Err(err) => NetworkConnection::send_network_message(
+                        NetworkConnection::Error {
+                            error: err.to_string(),
+                        },
+                        &mut stream,
+                    )?,
                 }
             }
             Commands::Set { key, value } => {
