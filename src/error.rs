@@ -23,6 +23,10 @@ pub enum KvsError {
     AddrParseError(AddrParseError),
     /// Unknown Engine Type
     UnknownEngineType(String),
+    /// Sled Error
+    SledError(sled::Error),
+    /// Wrong Engine Type Selected
+    WrongEngineType(String),
 }
 
 impl fmt::Display for KvsError {
@@ -41,6 +45,8 @@ impl fmt::Display for KvsError {
             }
             KvsError::AddrParseError(ref err) => write!(f, "IP Address Parse error: {}", err),
             KvsError::UnknownEngineType(eng_type) => write!(f, "Unknown Engine type: {}", eng_type),
+            KvsError::SledError(ref err) => write!(f, "Sled Error: {}", err),
+            KvsError::WrongEngineType(engine_type) => write!(f, "Wrong Engine Type Detected"),
         }
     }
 }
@@ -80,5 +86,11 @@ impl From<TryFromIntError> for KvsError {
 impl From<AddrParseError> for KvsError {
     fn from(err: AddrParseError) -> Self {
         KvsError::AddrParseError(err)
+    }
+}
+
+impl From<sled::Error> for KvsError {
+    fn from(err: sled::Error) -> Self {
+        KvsError::SledError(err)
     }
 }

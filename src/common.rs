@@ -2,8 +2,10 @@
 // Our KVS supports only 3 commands i.e., set k v, get k, rm k; All the elements are strings. So we will use an enum to represent and then we can serialize / deserialize that
 
 use std::{
+    fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
+    path::{Path, PathBuf},
 };
 
 use crate::Result;
@@ -88,4 +90,22 @@ impl NetworkConnection {
         buf_reader.read_exact(&mut content_buf)?;
         Ok(content_buf)
     }
+}
+
+pub fn get_current_engine(path: impl Into<PathBuf>) -> Result<Option<String>> {
+    let mut file_path: PathBuf = path.into();
+    file_path.push("ENGINE_MODE.txt");
+    if file_path.is_file() {
+        let engine_type = fs::read_to_string(file_path)?;
+        return Ok(Some(engine_type));
+    }
+    Ok(None)
+}
+
+pub fn log_engine(path: impl Into<PathBuf>, engine_type: String) -> Result<()> {
+    let mut file_path: PathBuf = path.into();
+    file_path.push("ENGINE_MODE.txt");
+    fs::create_dir_all(&file_path.parent().unwrap())?;
+    fs::write(file_path, engine_type)?;
+    Ok(())
 }

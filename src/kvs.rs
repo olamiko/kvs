@@ -135,6 +135,117 @@ impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
     }
 }
 
+impl KvsEngine for KvStore {
+    /// Sets the value of a string key to a string
+    ///
+    /// If the key already exists, the previous value will be overwritten.
+    ///
+    /// # Errors
+    ///
+    /// It propagates I/O or serialization errors during writing the log
+    ///
+    /// ```
+    /// # use crate::kvs::KvsEngine;
+    /// # use std::path::Path;
+    /// # use kvs::{KvStore, Result};
+    /// #
+    /// # fn main() -> Result<()> {
+    /// # let mut store = KvStore::open(Path::new(".")).unwrap();
+    /// store.set("name".to_string(), "olamide".to_string());
+    /// assert_eq!(store.get("name".to_string())?, Some("olamide".to_string()));
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        let logline = KvsLogLine::Set {
+            key: key.clone(),
+            value: value.clone(),
+        };
+
+        let start_pos = self.writer.pos;
+        serialize_to_log(&mut self.writer, logline)?;
+
+        // place the element in the index
+        if let Some(old_cmd) = self
+            .index
+            .insert(key, (self.current_gen, start_pos..self.writer.pos).into())
+        {
+            self.uncompacted += old_cmd.len;
+        }
+
+        // check for defragmentation
+        if self.uncompacted > COMPACTION_THRESHOLD {
+            self.compaction()?;
+        }
+        Ok(())
+    }
+
+    /// Gets the string value of a given string key
+    ///
+    /// Returns `None` if the given key does not exist
+    ///
+    /// # Errors
+    ///
+    /// It propagates I/O or deserialization errors during log replay.
+    /// Also returns `KvsError::UnexpectedCommandType` if the given command type is unexpected
+    ///
+    /// ```
+    /// # use crate::kvs::KvsEngine;
+    /// # use std::path::Path;
+    /// # use kvs::{KvStore, Result};
+    /// #
+    /// # fn main() -> Result<()> {
+    /// # let mut store = KvStore::open(Path::new(".")).unwrap();
+    /// # store.set("name".to_string(), "olamide".to_string());
+    /// assert_eq!(store.get("name".to_string())?, Some("olamide".to_string()));
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        if let Some(cmd_pos) = self.index.get(&key) {
+            let reader = self
+                .readers
+                .get_mut(&cmd_pos.gen)
+                .expect("Cannot find log reader");
+            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+            if let KvsLogLine::Set { key: _, value } = deserialize_from_log(reader)? {
+                Ok(Some(value))
+            } else {
+                Err(KvsError::UnexpectedCommandType)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// ```
+    /// # use crate::kvs::KvsEngine;
+    /// # use std::path::Path;
+    /// # use kvs::{KvStore, Result};
+    /// #
+    /// # fn main() -> Result<()> {
+    /// # let mut store = KvStore::open(Path::new(".")).unwrap();
+    /// # store.set("name".to_string(), "olamide".to_string());
+    /// store.remove("name".to_string());
+    /// # assert_eq!(store.get("name".to_string())?, None);
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn remove(&mut self, key: String) -> Result<()> {
+        // Assert the key is in the index
+        if !self.index.contains_key(&key) {
+            return Err(KvsError::KeyDoesNotExist);
+        }
+        let logline = KvsLogLine::Rm { key: key.clone() };
+        serialize_to_log(&mut self.writer, logline)?;
+        // remove the element from the index
+        if let Some(old_cmd) = self.index.remove(&key) {
+            self.uncompacted += old_cmd.len;
+        }
+        Ok(())
+    }
+}
+
 impl KvStore {
     /// Opens a `KvStore` with the given path
     ///
@@ -178,106 +289,6 @@ impl KvStore {
             index,
             uncompacted,
         })
-    }
-
-    /// Gets the string value of a given string key
-    ///
-    /// Returns `None` if the given key does not exist
-    ///
-    /// # Errors
-    ///
-    /// It propagates I/O or deserialization errors during log replay.
-    /// Also returns `KvsError::UnexpectedCommandType` if the given command type is unexpected
-    ///
-    /// ```
-    /// # use kvs::KvStore;
-    /// #
-    /// # fn main() {
-    /// # let mut store = KvStore::new();
-    /// # store.set("name".to_string(), "olamide".to_string());
-    /// assert_eq!(store.get("name".to_string())?, Some("olamide".to_string()));
-    /// # }
-    /// ```
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        if let Some(cmd_pos) = self.index.get(&key) {
-            let reader = self
-                .readers
-                .get_mut(&cmd_pos.gen)
-                .expect("Cannot find log reader");
-            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
-            if let KvsLogLine::Set { key: _, value } = deserialize_from_log(reader)? {
-                Ok(Some(value))
-            } else {
-                Err(KvsError::UnexpectedCommandType)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Sets the value of a string key to a string
-    ///
-    /// If the key already exists, the previous value will be overwritten.
-    ///
-    /// # Errors
-    ///
-    /// It propagates I/O or serialization errors during writing the log
-    ///
-    /// ```
-    /// # use kvs::KvStore;
-    /// #
-    /// # fn main() {
-    /// # let mut store = KvStore::new();
-    /// store.set("name".to_string(), "olamide".to_string());
-    /// assert_eq!(store.get("name".to_string())?, Some("olamide".to_string()));
-    /// # }
-    /// ```
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let logline = KvsLogLine::Set {
-            key: key.clone(),
-            value: value.clone(),
-        };
-
-        let start_pos = self.writer.pos;
-        serialize_to_log(&mut self.writer, logline)?;
-
-        // place the element in the index
-        if let Some(old_cmd) = self
-            .index
-            .insert(key, (self.current_gen, start_pos..self.writer.pos).into())
-        {
-            self.uncompacted += old_cmd.len;
-        }
-
-        // check for defragmentation
-        if self.uncompacted > COMPACTION_THRESHOLD {
-            self.compaction()?;
-        }
-        Ok(())
-    }
-
-    /// ```
-    /// # use kvs::KvStore;
-    /// #
-    /// # fn main() {
-    /// # let mut store = KvStore::new();
-    /// # store.set("name".to_string(), "olamide".to_string());
-    /// store.remove("name".to_string());
-    /// # assert_eq!(store.get("name".to_string())?, None);
-    /// # }
-    /// ```
-    pub fn remove(&mut self, key: String) -> Result<()> {
-        // Assert the key is in the index
-        if !self.index.contains_key(&key) {
-            return Err(KvsError::KeyDoesNotExist);
-        }
-        let logline = KvsLogLine::Rm { key: key.clone() };
-        serialize_to_log(&mut self.writer, logline)?;
-        // remove the element from the index
-        if let Some(old_cmd) = self.index.remove(&key) {
-            self.uncompacted += old_cmd.len;
-        }
-        Ok(())
     }
 
     /// Clears stale entries in the log

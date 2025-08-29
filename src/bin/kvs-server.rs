@@ -1,6 +1,8 @@
 use clap::Parser;
-use kvs::{Commands, KvStore, KvsError, NetworkConnection, Result};
+use kvs::{get_current_engine, log_engine};
+use kvs::{Commands, KvStore, KvsEngine, KvsError, NetworkConnection, Result};
 use slog::*;
+use std::ops::Deref;
 use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::Path,
@@ -25,26 +27,39 @@ fn setup_logging() -> Logger {
 
 pub fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
-    // Open store
-    let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
     // set up logging
     let log = setup_logging();
     info!(log, "Server Startup"; "Server Version Number" => env!("CARGO_PKG_VERSION"));
 
     let mut ip_port: SocketAddr = "127.0.0.1:4000".parse()?;
-    let mut engine_name = "kvs";
+    let mut engine_name = String::from("");
 
     if let Some(ipaddr) = cli.addr.as_deref() {
         ip_port = ipaddr.parse()?;
     }
-    if let Some(eng_name) = cli.engine.as_deref() {
-        if eng_name == "kvs" || eng_name == "sled" {
-            engine_name = eng_name;
-        } else {
-            return Err(KvsError::UnknownEngineType(eng_name.to_string()));
+
+    match cli.engine.as_deref() {
+        Some(eng_name) => match eng_name {
+            "kvs" | "sled" => { 
+                println!("{}", eng_name);
+                if get_current_engine(Path::new("."))?.is_some_and(|v| v != eng_name.to_string()) {
+                    return Err(KvsError::WrongEngineType(eng_name.to_string()));
+                }
+                // check if current eng type is the same as eng name
+                engine_name = eng_name.into();
+                log_engine(Path::new("."), engine_name.clone())?;
+            }
+            _ => return Err(KvsError::UnknownEngineType(eng_name.to_string())),
+        },
+        None => {
+            engine_name = get_current_engine(Path::new("."))?.map_or("kvs".to_string(), |v| v);
+            log_engine(Path::new("."), engine_name.clone())?;
         }
     }
+
+    // Open store
+    let mut store: KvStore = KvStore::open(Path::new(".")).unwrap();
 
     info!(log, "Received Configuration"; "Engine name" => engine_name, "Ip Address and Port" => ip_port);
     let listener = TcpListener::bind(ip_port)?;
